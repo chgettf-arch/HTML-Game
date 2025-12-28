@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Horror Maze with Minimap</title>
+    <style>
+        * { box-sizing: border-box; -webkit-touch-callout: none; -webkit-user-select: none; touch-action: none; }
+        body { margin: 0; overflow: hidden; background: #000; font-family: sans-serif; }
+        
+        #game-ui { display: none; position: fixed; inset: 0; z-index: 100; }
+        #stats { position: absolute; top: 15px; left: 15px; color: #ff0; font-weight: bold; text-shadow: 2px 2px #000; }
+
+        /* KHU VỰC GIAO DIỆN PHẢI */
+        #ui-right { position: absolute; top: 15px; right: 15px; display: flex; flex-direction: column; align-items: flex-end; gap: 10px; }
+        
+        /* MINIMAP */
+        #minimap-container { 
+            width: 120px; height: 120px; 
+            background: rgba(0,0,0,0.8); 
+            border: 2px solid #555; 
+            border-radius: 5px;
+            overflow: hidden;
+        }
+        #map-canvas { width: 100%; height: 100%; }
+
+        /* THANH PIN */
+        .bar-outer { width: 120px; height: 10px; background: rgba(255,255,255,0.1); border: 1px solid #fff; position: relative; }
+        .bar-fill { height: 100%; width: 100%; transition: width 0.1s; }
+        #bat-f { background: #fff; } 
+        #sta-f { background: #f00; }
+        .label { position: absolute; width: 100%; text-align: center; font-size: 8px; color: #000; font-weight: bold; top: 0; line-height: 9px; }
+
+        /* JOYSTICK VÀ NÚT */
+        #joy-base { position: absolute; bottom: 40px; left: 40px; width: 110px; height: 110px; background: rgba(255,255,255,0.1); border: 2px solid rgba(255,255,255,0.3); border-radius: 50%; }
+        #joy-stick { position: absolute; width: 45px; height: 45px; background: #fff; border-radius: 50%; left: 32.5px; top: 32.5px; }
+        
+        .btn-act { position: absolute; width: 70px; height: 70px; border-radius: 50%; border: 2px solid #fff; background: rgba(0,0,0,0.5); color: #fff; font-weight: bold; display: flex; align-items: center; justify-content: center; }
+        #btn-run { bottom: 40px; right: 120px; border-color: red; color: red; }
+        #btn-charge { bottom: 120px; right: 40px; }
+
+        #menu, #game-over { position: fixed; inset: 0; background: #000; z-index: 2000; display: flex; flex-direction: column; align-items: center; justify-content: center; color: red; }
+        .p-btn { padding: 12px 30px; border: 2px solid red; background: none; color: red; font-weight: bold; cursor: pointer; margin-top: 20px; }
+    </style>
+</head>
+<body>
+
+    <div id="menu">
+        <h1 style="letter-spacing:10px;">THE MAZE</h1>
+        <button class="p-btn" onclick="start()">BẮT ĐẦU</button>
+    </div>
+
+    <div id="game-over" style="display:none;">
+        <h1>GAME OVER</h1>
+        <button class="p-btn" onclick="location.reload()">THỬ LẠI</button>
+    </div>
+
+    <div id="game-ui">
+        <div id="stats">HẠT: <span id="score">0</span>/15</div>
+        
+        <div id="ui-right">
+            <div id="minimap-container">
+                <canvas id="map-canvas" width="120" height="120"></canvas>
+            </div>
+            <div class="bar-outer">
+                <div id="bat-f" class="bar-fill"></div>
+                <div class="label">BATTERY</div>
+            </div>
+            <div class="bar-outer" style="border-color: red;">
+                <div id="sta-f" class="bar-fill"></div>
+                <div class="label" style="color:#fff">STAMINA</div>
+            </div>
+        </div>
+
+        <div id="joy-base"><div id="joy-stick"></div></div>
+        <div id="btn-run" class="btn-act">CHẠY</div>
+        <div id="btn-charge" class="btn-act">SẠC</div>
+    </div>
+
+    <script type="importmap">{ "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }</script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        let scene, camera, renderer, monster, flashLight, raycaster;
+        let walls = [], seeds = [], score = 0, isDead = false;
+        let moveVec = new THREE.Vector2(0, 0);
+        let yaw = 0, pitch = 0, battery = 100, stamina = 100;
+        let isRunning = false, isCharging = false;
+
+        const MAP_DATA = [
+            [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+            [1,0,0,0,1,0,0,0,0,0,0,0,0,0,1],
+            [1,0,1,0,1,0,1,1,1,0,1,1,1,0,1],
+            [1,0,1,0,0,0,1,0,0,0,1,0,0,0,1],
+            [1,0,1,1,1,1,1,0,1,1,1,0,1,1,1],
+            [1,0,0,0,0,0,0,0,1,0,0,0,0,0,1],
+            [1,1,1,0,1,1,1,0,1,0,1,1,1,0,1],
+            [1,0,0,0,1,0,0,0,0,0,1,0,0,0,1],
+            [1,0,1,1,1,0,1,1,1,1,1,0,1,1,1],
+            [1,0,0,0,0,0,1,0,0,0,0,0,0,0,1],
+            [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]
+        ];
+
+        window.start = () => {
+            document.getElementById('menu').style.display = 'none';
+            document.getElementById('game-ui').style.display = 'block';
+            init(); animate();
+        };
+
+        function init() {
+            scene = new THREE.Scene();
+            scene.fog = new THREE.FogExp2(0, 0.15);
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.body.appendChild(renderer.domElement);
+
+            raycaster = new THREE.Raycaster();
+            flashLight = new THREE.SpotLight(0xffffff, 1, 40, 0.5, 0.3, 2);
+            camera.add(flashLight, flashLight.target);
+            flashLight.target.position.set(0,0,-5);
+            scene.add(camera);
+
+            const wallGeo = new THREE.BoxGeometry(4, 6, 4);
+            const wallMat = new THREE.MeshStandardMaterial({color: 0x222222});
+            
+            for(let z=0; z<MAP_DATA.length; z++) {
+                for(let x=0; x<MAP_DATA[z].length; x++) {
+                    let px = (x - 7.5) * 4, pz = (z - 5.5) * 4;
+                    if(MAP_DATA[z][x] === 1) {
+                        let w = new THREE.Mesh(wallGeo, wallMat);
+                        w.position.set(px, 3, pz);
+                        scene.add(w); walls.push(w);
+                    } else if(Math.random() < 0.2) {
+                        let s = new THREE.Mesh(new THREE.SphereGeometry(0.2), new THREE.MeshBasicMaterial({color:0xffff00}));
+                        s.position.set(px, 1.2, pz);
+                        scene.add(s); seeds.push(s);
+                    }
+                }
+            }
+
+            const eyeMat = new THREE.MeshStandardMaterial({color:0xff0000, emissive:0xff0000, emissiveIntensity:15});
+            monster = new THREE.Group();
+            const e1 = new THREE.Mesh(new THREE.SphereGeometry(0.25), eyeMat); e1.position.x = -0.3;
+            const e2 = new THREE.Mesh(new THREE.SphereGeometry(0.25), eyeMat); e2.position.x = 0.3;
+            monster.add(e1, e2); scene.add(monster);
+            monster.position.set(20, 1.5, 15);
+
+            camera.position.set(-20, 1.5, -15);
+            setupControls();
+        }
+
+        function setupControls() {
+            const stick = document.getElementById('joy-stick');
+            const joyBase = document.getElementById('joy-base');
+            const rect = joyBase.getBoundingClientRect();
+            const center = { x: rect.left + 55, y: rect.top + 55 };
+            let moveId = null, lookId = null, lx, ly;
+
+            window.addEventListener('touchstart', e => {
+                for(let t of e.changedTouches) {
+                    if(t.clientX < window.innerWidth/2 && moveId === null) moveId = t.identifier;
+                    else if(lookId === null) { lookId = t.identifier; lx = t.clientX; ly = t.clientY; }
+                }
+            }, {passive:false});
+
+            window.addEventListener('touchmove', e => {
+                if(e.cancelable) e.preventDefault();
+                for(let t of e.changedTouches) {
+                    if(t.identifier === moveId) {
+                        let dx = t.clientX - center.x, dy = t.clientY - center.y;
+                        let d = Math.min(Math.sqrt(dx*dx+dy*dy), 40);
+                        let a = Math.atan2(dy, dx);
+                        moveVec.x = Math.cos(a) * (d/40); moveVec.y = Math.sin(a) * (d/40);
+                        stick.style.transform = `translate(${Math.cos(a)*d}px, ${Math.sin(a)*d}px)`;
+                    } else if(t.identifier === lookId) {
+                        yaw -= (t.clientX - lx) * 0.005;
+                        pitch = Math.max(-0.6, Math.min(0.6, pitch - (t.clientY - ly)*0.005));
+                        lx = t.clientX; ly = t.clientY;
+                    }
+                }
+            }, {passive:false});
+
+            window.addEventListener('touchend', e => {
+                for(let t of e.changedTouches) {
+                    if(t.identifier === moveId) { moveId = null; moveVec.set(0,0); stick.style.transform = 'translate(0,0)'; }
+                    else if(t.identifier === lookId) lookId = null;
+                }
+            });
+
+            const b = (id, f) => {
+                document.getElementById(id).addEventListener('touchstart', e => { if(e.cancelable) e.preventDefault(); f(true); });
+                document.getElementById(id).addEventListener('touchend', () => f(false));
+            };
+            b('btn-run', v => isRunning = v); b('btn-charge', v => isCharging = v);
+        }
+
+        function updateMinimap() {
+            const canvas = document.getElementById('map-canvas');
+            const ctx = canvas.getContext('2d');
+            ctx.clearRect(0,0,120,120);
+            ctx.save();
+            ctx.translate(60, 60);
+            const scale = 2.5;
+
+            // Vẽ tường
+            ctx.fillStyle = "#444";
+            walls.forEach(w => ctx.fillRect(w.position.x * scale - 2, w.position.z * scale - 2, 4, 4));
+
+            // Vẽ hạt vàng
+            ctx.fillStyle = "#ff0";
+            seeds.forEach(s => { if(s.visible) ctx.fillRect(s.position.x * scale - 1, s.position.z * scale - 1, 2, 2); });
+
+            // Vẽ quái vật
+            ctx.fillStyle = "red";
+            ctx.fillRect(monster.position.x * scale - 2, monster.position.z * scale - 2, 4, 4);
+
+            // Vẽ người chơi
+            ctx.fillStyle = "#0af";
+            ctx.beginPath();
+            ctx.arc(camera.position.x * scale, camera.position.z * scale, 3, 0, Math.PI*2);
+            ctx.fill();
+
+            ctx.restore();
+        }
+
+        function animate() {
+            if(isDead) return;
+            requestAnimationFrame(animate);
+
+            if(isCharging) battery = Math.min(100, battery + 1.2); else battery = Math.max(0, battery - 0.07);
+            if(isRunning && stamina > 0 && moveVec.length() > 0) stamina = Math.max(0, stamina - 0.6); else stamina = Math.min(100, stamina + 0.3);
+            document.getElementById('bat-f').style.width = battery + "%";
+            document.getElementById('sta-f').style.width = stamina + "%";
+
+            let baseInt = (battery / 100) * 300;
+            raycaster.setFromCamera(new THREE.Vector2(0,0), camera);
+            const hits = raycaster.intersectObjects(walls);
+            flashLight.intensity = (hits.length > 0 && hits[0].distance < 3) ? baseInt * 3 : baseInt;
+
+            camera.rotation.set(pitch, yaw, 0, 'YXZ');
+            if(moveVec.length() > 0) {
+                const spd = (isRunning && stamina > 0) ? 0.28 : 0.13;
+                const forward = new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion);
+                const right = new THREE.Vector3(1,0,0).applyQuaternion(camera.quaternion);
+                forward.y = 0; right.y = 0;
+                const dir = forward.normalize().multiplyScalar(-moveVec.y).add(right.normalize().multiplyScalar(moveVec.x));
+                const oldP = camera.position.clone();
+                camera.position.add(dir.multiplyScalar(spd));
+                for(let w of walls) if(new THREE.Box3().setFromObject(w).expandByScalar(-0.4).containsPoint(camera.position)) camera.position.copy(oldP);
+            }
+
+            seeds.forEach(s => { if(s.visible && camera.position.distanceTo(s.position) < 1.2) { s.visible = false; score++; document.getElementById('score').innerText = score; }});
+            monster.position.lerp(camera.position, 0.007 + (score * 0.001));
+            monster.lookAt(camera.position);
+            if(camera.position.distanceTo(monster.position) < 1.5) { isDead = true; document.getElementById('game-over').style.display='flex'; }
+
+            updateMinimap();
+            renderer.render(scene, camera);
+        }
+    </script>
+</body>
+</html>
